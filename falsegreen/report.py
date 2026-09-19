@@ -71,6 +71,8 @@ def terminal(result: ScanResult, score: Score, color: bool = True, limit: int = 
             add(f"           {_c(f.detail, DIM, color)}")
         if f.snippet:
             add(f"           {_c('| ' + f.snippet, DIM, color)}")
+        if getattr(f, "suggested_fix", ""):
+            add(f"           {_c('+ fix: ' + f.suggested_fix, GREEN, color)}")
         add("")
 
     remaining = len(result.findings) - len(shown)
@@ -159,6 +161,8 @@ def as_json(result: ScanResult, score: Score) -> str:
                 "test": f.test_name,
                 "title": f.title,
                 "detail": f.detail,
+                "snippet": f.snippet,
+                "suggested_fix": getattr(f, "suggested_fix", ""),
             }
             for f in result.sorted_findings()
         ],
@@ -184,38 +188,61 @@ def sarif(result: ScanResult, score: Score) -> str:
             },
         )
 
+    results_list = []
+    for f in result.sorted_findings():
+        uri = (
+            str(f.file.relative_to(result.root)).replace("\\", "/")
+            if _under(f.file, result.root)
+            else str(f.file).replace("\\", "/")
+        )
+        entry = {
+            "ruleId": f.rule.value,
+            "level": "error" if f.severity in (Severity.CRITICAL, Severity.HIGH) else "warning",
+            "message": {"text": f"{f.title} in {f.test_name}. {f.detail}".strip()},
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": uri},
+                        "region": {
+                            "startLine": max(1, f.line),
+                            **({"snippet": {"text": f.snippet}} if f.snippet else {}),
+                        },
+                    }
+                }
+            ],
+        }
+        if getattr(f, "suggested_fix", ""):
+            entry["fixes"] = [
+                {
+                    "description": {"text": f"Suggested fix: {f.suggested_fix}"},
+                    "fileChanges": [
+                        {
+                            "artifactLocation": {"uri": uri},
+                            "replacements": [
+                                {
+                                    "deletedRegion": {"startLine": max(1, f.line)},
+                                    "insertedContent": {"text": f.suggested_fix},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        results_list.append(entry)
+
     payload = {
-        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spectification/master/sarif-2.1/schema.json",
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",
         "runs": [
             {
                 "tool": {
                     "driver": {
                         "name": "falsegreen",
-                        "informationUri": "https://github.com/falsegreen/falsegreen",
+                        "informationUri": "https://github.com/Prasad-PingFederate/falsegreen",
                         "rules": list(rules.values()),
                     }
                 },
-                "results": [
-                    {
-                        "ruleId": f.rule.value,
-                        "level": "error" if f.severity in (Severity.CRITICAL, Severity.HIGH) else "warning",
-                        "message": {"text": f"{f.title} in {f.test_name}. {f.detail}".strip()},
-                        "locations": [
-                            {
-                                "physicalLocation": {
-                                    "artifactLocation": {
-                                        "uri": str(f.file.relative_to(result.root)).replace("\\", "/")
-                                        if _under(f.file, result.root)
-                                        else str(f.file).replace("\\", "/")
-                                    },
-                                    "region": {"startLine": max(1, f.line)},
-                                }
-                            }
-                        ],
-                    }
-                    for f in result.sorted_findings()
-                ],
+                "results": results_list,
             }
         ],
     }
