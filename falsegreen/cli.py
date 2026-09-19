@@ -10,8 +10,11 @@ from pathlib import Path
 from typing import List
 
 from . import report as report_mod
+from .detectors.csharp import scan_csharp_file
+from .detectors.golang import scan_golang_file
 from .detectors.java import scan_java_file
 from .detectors.javascript import scan_js_file
+from .detectors.kotlin import scan_kotlin_file
 from .detectors.python_ast import scan_python_file
 from .detectors.robot import scan_robot_file
 from .models import ScanResult, Severity
@@ -22,7 +25,18 @@ JS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}
 # Robot Framework keeps suites in .robot, and .resource for shared keywords.
 ROBOT_EXTENSIONS = {".robot", ".resource"}
 JAVA_EXTENSIONS = {".java"}
-ALL_EXTENSIONS = PY_EXTENSIONS | JS_EXTENSIONS | ROBOT_EXTENSIONS | JAVA_EXTENSIONS
+CSHARP_EXTENSIONS = {".cs"}
+GO_EXTENSIONS = {".go"}
+KOTLIN_EXTENSIONS = {".kt", ".kts"}
+ALL_EXTENSIONS = (
+    PY_EXTENSIONS
+    | JS_EXTENSIONS
+    | ROBOT_EXTENSIONS
+    | JAVA_EXTENSIONS
+    | CSHARP_EXTENSIONS
+    | GO_EXTENSIONS
+    | KOTLIN_EXTENSIONS
+)
 
 DEFAULT_INCLUDES = [
     # Python
@@ -42,6 +56,13 @@ DEFAULT_INCLUDES = [
     # *Test / *Tests / *IT suffixes are what Surefire and Failsafe look for.
     "*Test.java", "*Tests.java", "Test*.java", "*IT.java", "*TestCase.java",
     "src/test/java/**/*.java",
+    # C# / .NET: NUnit, xUnit, MSTest, SpecFlow
+    "*Test.cs", "*Tests.cs", "Test*.cs", "*Spec.cs", "*Steps.cs", "**/*Tests.cs",
+    # Go: standard testing package
+    "*_test.go",
+    # Kotlin: JUnit 5, Kotest
+    "*Test.kt", "*Tests.kt", "Test*.kt", "*Spec.kt", "**/*Test.kt", "**/*Spec.kt",
+    "src/test/kotlin/**/*.kt",
 ]
 
 #: Corpora of deliberately broken tests. Held separately from the vendor
@@ -225,6 +246,12 @@ def main(argv: List[str] | None = None) -> int:
             scan_java_file(path, result)
         elif path.suffix in JS_EXTENSIONS:
             scan_js_file(path, result)
+        elif path.suffix in CSHARP_EXTENSIONS:
+            scan_csharp_file(path, result)
+        elif path.suffix in GO_EXTENSIONS:
+            scan_golang_file(path, result)
+        elif path.suffix in KOTLIN_EXTENSIONS:
+            scan_kotlin_file(path, result)
         else:
             scan_python_file(path, result)
 
