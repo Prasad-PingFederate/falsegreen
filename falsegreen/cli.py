@@ -10,13 +10,18 @@ from pathlib import Path
 from typing import List
 
 from . import report as report_mod
+from .detectors.java import scan_java_file
 from .detectors.javascript import scan_js_file
 from .detectors.python_ast import scan_python_file
+from .detectors.robot import scan_robot_file
 from .models import ScanResult, Severity
 from .score import compute
 
 PY_EXTENSIONS = {".py"}
 JS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}
+# Robot Framework keeps suites in .robot, and .resource for shared keywords.
+ROBOT_EXTENSIONS = {".robot", ".resource"}
+JAVA_EXTENSIONS = {".java"}
 
 DEFAULT_INCLUDES = [
     # Python
@@ -29,6 +34,13 @@ DEFAULT_INCLUDES = [
     "tests/**/*.js", "tests/**/*.ts",
     "e2e/**/*.js", "e2e/**/*.ts",
     "__tests__/**/*.js", "__tests__/**/*.ts",
+    # Robot Framework. Suites are conventionally named for what they test
+    # rather than prefixed with "test", so match the extension itself.
+    "*.robot", "*.resource",
+    # Java. Maven and Gradle both put tests under src/test/java, and the
+    # *Test / *Tests / *IT suffixes are what Surefire and Failsafe look for.
+    "*Test.java", "*Tests.java", "Test*.java", "*IT.java", "*TestCase.java",
+    "src/test/java/**/*.java",
 ]
 
 DEFAULT_EXCLUDES = [
@@ -95,7 +107,7 @@ def collect_files(root: Path, includes: List[str], excludes: List[str]) -> List[
 
     found: List[Path] = []
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in (PY_EXTENSIONS | JS_EXTENSIONS):
+        if not path.is_file() or path.suffix not in (PY_EXTENSIONS | JS_EXTENSIONS | ROBOT_EXTENSIONS | JAVA_EXTENSIONS):
             continue
         full = str(path).replace(os.sep, "/")
         if any(fnmatch.fnmatch(full, pattern) for pattern in excludes):
@@ -129,7 +141,11 @@ def main(argv: List[str] | None = None) -> int:
 
     result = ScanResult(root=scan_root)
     for path in files:
-        if path.suffix in JS_EXTENSIONS:
+        if path.suffix in ROBOT_EXTENSIONS:
+            scan_robot_file(path, result)
+        elif path.suffix in JAVA_EXTENSIONS:
+            scan_java_file(path, result)
+        elif path.suffix in JS_EXTENSIONS:
             scan_js_file(path, result)
         else:
             scan_python_file(path, result)

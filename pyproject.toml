@@ -37,3 +37,10 @@ Issues = "https://github.com/YOURNAME/falsegreen/issues"
 
 [tool.setuptools.packages.find]
 include = ["falsegreen*"]
+
+[tool.pytest.ini_options]
+# tests/fixtures holds deliberately broken sample suites - they are INPUT to the
+# detectors, not tests to run. Collecting them turns the fixture corpus into
+# four red Playwright tests and makes `pytest` fail on a clean checkout.
+testpaths = ["tests"]
+norecursedirs = ["tests/fixtures"]

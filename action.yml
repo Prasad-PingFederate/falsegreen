@@ -38,7 +38,14 @@ runs:
 
     - name: Install falsegreen
       shell: bash
-      run: pip install --quiet falsegreen
+      # Installed from this repository, not by bare name: the name `falsegreen`
+      # on PyPI belongs to an unrelated project by a different author, so
+      # `pip install falsegreen` fetches something else entirely. ${{ github.action_ref }}
+      # resolves to the ref the caller pinned the action to, keeping the CLI and
+      # the action definition in lockstep.
+      run: |
+        REF="${{ github.action_ref }}"
+        pip install --quiet "falsegreen @ git+https://github.com/Prasad-PingFederate/falsegreen@${REF:-main}"
 
     - name: Scan
       id: scan
