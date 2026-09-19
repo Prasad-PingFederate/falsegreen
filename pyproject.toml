@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "falsegreen"
+version = "0.1.0"
+description = "Find tests that cannot fail."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["testing", "pytest", "playwright", "static-analysis", "ci", "test-quality"]
+
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Quality Assurance",
+]
+
+# No runtime dependencies on purpose. It is stdlib ast and nothing else, so it
+# installs anywhere, adds no supply-chain surface to someone's CI, and cannot
+# break because a transitive pin moved.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+falsegreen = "falsegreen.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/YOURNAME/falsegreen"
+Issues = "https://github.com/YOURNAME/falsegreen/issues"
+
+[tool.setuptools.packages.find]
+include = ["falsegreen*"]

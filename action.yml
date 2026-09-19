@@ -1,0 +1,72 @@
+name: "falsegreen"
+description: "Find tests that cannot fail, and surface them in the PR diff."
+author: "falsegreen"
+
+branding:
+  icon: "alert-triangle"
+  color: "green"
+
+inputs:
+  path:
+    description: "Directory to scan"
+    required: false
+    default: "."
+  fail-under:
+    description: "Fail the job if the Trust Score is below this (0-100). Empty to never fail."
+    required: false
+    default: ""
+  fail-on:
+    description: "Fail the job if findings exist at or above this severity: critical, high, medium, low, never."
+    required: false
+    default: "never"
+  include:
+    description: "Comma-separated globs for test files"
+    required: false
+    default: ""
+  upload-sarif:
+    description: "Upload SARIF so findings appear inline in the PR diff"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install falsegreen
+      shell: bash
+      run: pip install --quiet falsegreen
+
+    - name: Scan
+      id: scan
+      shell: bash
+      run: |
+        ARGS=""
+        if [ -n "${{ inputs.include }}" ]; then
+          IFS=',' read -ra GLOBS <<< "${{ inputs.include }}"
+          for g in "${GLOBS[@]}"; do ARGS="$ARGS --include $g"; done
+        fi
+
+        # Human-readable report into the run summary. Never fails the job here -
+        # the gate below decides that, so the report is always produced.
+        falsegreen "${{ inputs.path }}" $ARGS --format markdown >> "$GITHUB_STEP_SUMMARY" || true
+
+        if [ "${{ inputs.upload-sarif }}" = "true" ]; then
+          falsegreen "${{ inputs.path }}" $ARGS --format sarif -o falsegreen.sarif || true
+        fi
+
+        GATE=""
+        if [ -n "${{ inputs.fail-under }}" ]; then GATE="$GATE --fail-under ${{ inputs.fail-under }}"; fi
+        if [ "${{ inputs.fail-on }}" != "never" ]; then GATE="$GATE --fail-on ${{ inputs.fail-on }}"; fi
+
+        falsegreen "${{ inputs.path }}" $ARGS $GATE --no-color
+
+    - name: Upload SARIF
+      if: always() && inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: falsegreen.sarif
+      continue-on-error: true
