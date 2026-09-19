@@ -17,6 +17,12 @@ from typing import List, Optional, Set
 from ..models import Finding, Rule, ScanResult, Severity, TestCase
 
 # Callables that constitute a real check.
+ASYNC_ACTION_METHODS = {
+    "goto", "click", "fill", "press", "check", "uncheck",
+    "select_option", "wait_for_selector", "wait_for_load_state",
+    "screenshot", "evaluate", "dispatch_event", "type", "hover", "focus"
+}
+
 ASSERT_CALL_NAMES = {
     "assertEqual", "assertNotEqual", "assertTrue", "assertFalse", "assertIs",
     "assertIsNot", "assertIsNone", "assertIsNotNone", "assertIn", "assertNotIn",
@@ -260,6 +266,7 @@ class _Analyzer(ast.NodeVisitor):
         self._outside_loop_assertion_count = 0
         self._soft_assert_calls: List[int] = []
         self._has_soft_assert_finalize = False
+        self._is_async_func: bool = False
 
     # -- helpers --------------------------------------------------------
 
@@ -440,6 +447,8 @@ class _Analyzer(ast.NodeVisitor):
         self._outside_loop_assertion_count = 0
         self._soft_assert_calls = []
         self._has_soft_assert_finalize = False
+        outer_async = self._is_async_func
+        self._is_async_func = isinstance(node, ast.AsyncFunctionDef)
 
         if is_test:
             case = TestCase(
@@ -537,6 +546,7 @@ class _Analyzer(ast.NodeVisitor):
                     f"'{node.name}' reads as a verification at every call site but never asserts",
                 )
 
+        self._is_async_func = outer_async
         self._current_test = outer_test
         self._current_func_name = outer_name
         self._assertion_count = outer_asserts
@@ -680,6 +690,28 @@ class _Analyzer(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Expr(self, node: ast.Expr) -> None:
+        # Check for unawaited async Playwright / coroutine calls in async tests
+        if self._is_async_func and isinstance(node.value, ast.Call):
+            call = node.value
+            func_name = None
+            if isinstance(call.func, ast.Attribute):
+                func_name = call.func.attr
+            elif isinstance(call.func, ast.Name):
+                func_name = call.func.id
+            if func_name in ASYNC_ACTION_METHODS and self._current_test is not None:
+                snippet = self._snippet(node.lineno)
+                self.result.findings.append(
+                    Finding(
+                        rule=Rule.UNAWAITED_ASYNC_CALL,
+                        severity=Severity.HIGH,
+                        file=self.path,
+                        line=node.lineno,
+                        test_name=self._current_test.name,
+                        snippet=snippet,
+                        detail=f"Async action '{func_name}()' is called without 'await'",
+                        suggested_fix=f"await {snippet}" if snippet and not snippet.startswith("await") else "",
+                    )
+                )
         """A bare `expect(x)` statement or predicate helper call builds a check and discards it."""
         snippet = self._snippet(node.lineno)
         if isinstance(node.value, ast.Call):

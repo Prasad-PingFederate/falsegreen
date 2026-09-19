@@ -45,6 +45,7 @@ class Rule(str, Enum):
     IGNORED_PREDICATE_CALL = "ignored-predicate-call"
     UNFINALIZED_SOFT_ASSERT = "unfinalized-soft-assert"
     EMPTY_STRING_ASSERTION = "empty-string-assertion"
+    UNAWAITED_ASYNC_CALL = "unawaited-async-call"
 
 
 RULE_TITLES = {
@@ -156,6 +157,9 @@ RULE_EXPLANATIONS = {
         "Soft assertions (such as `check.equal()` or `soft_asserts.append()`) were performed, "
         "but the test exited without calling `assert_all()` or `verify_all()`. Any failures "
         "recorded during the test are silently ignored."
+    ),
+    Rule.UNAWAITED_ASYNC_CALL: (
+        "In an async test, calling an async Playwright or coroutine method (like goto, click, fill) without await creates an unexecuted coroutine, so the intended action never runs while the test passes silently."
     ),
     Rule.EMPTY_STRING_ASSERTION: (
         "The assertion checks `assert '' in string` or `assert expected in string` where `expected` "
