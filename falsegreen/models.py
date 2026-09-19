@@ -42,6 +42,9 @@ class Rule(str, Enum):
     CONSTANT_CONDITION_TRAP = "constant-condition-trap"
     BROAD_RAISES = "broad-raises"
     LOOP_ONLY_ASSERTION = "loop-only-assertion"
+    IGNORED_PREDICATE_CALL = "ignored-predicate-call"
+    UNFINALIZED_SOFT_ASSERT = "unfinalized-soft-assert"
+    EMPTY_STRING_ASSERTION = "empty-string-assertion"
 
 
 RULE_TITLES = {
@@ -61,6 +64,9 @@ RULE_TITLES = {
     Rule.CONSTANT_CONDITION_TRAP: "Assertion condition contains truthy constant that is always true",
     Rule.BROAD_RAISES: "pytest.raises catches broad Exception or BaseException",
     Rule.LOOP_ONLY_ASSERTION: "Assertion only inside loop; passes silently if collection is empty",
+    Rule.IGNORED_PREDICATE_CALL: "Boolean predicate helper called without assert (result discarded)",
+    Rule.UNFINALIZED_SOFT_ASSERT: "Soft assertions collected but never finalized with assert_all()",
+    Rule.EMPTY_STRING_ASSERTION: "Empty string substring assertion is tautological (always true)",
 }
 
 RULE_EXPLANATIONS = {
@@ -141,6 +147,21 @@ RULE_EXPLANATIONS = {
         "collection is empty, the loop body never executes, zero assertions are run, "
         "and the test passes green."
     ),
+    Rule.IGNORED_PREDICATE_CALL: (
+        "A predicate helper method (such as `is_visible()`, `has_row()`, or `is_logged_in()`) "
+        "was invoked as a standalone statement without `assert`. The method returned a boolean "
+        "which Python discarded, so the test passes regardless of whether the check was True or False."
+    ),
+    Rule.UNFINALIZED_SOFT_ASSERT: (
+        "Soft assertions (such as `check.equal()` or `soft_asserts.append()`) were performed, "
+        "but the test exited without calling `assert_all()` or `verify_all()`. Any failures "
+        "recorded during the test are silently ignored."
+    ),
+    Rule.EMPTY_STRING_ASSERTION: (
+        "The assertion checks `assert '' in string` or `assert expected in string` where `expected` "
+        "is empty. In Python and JavaScript, an empty string is present in every string, making "
+        "the assertion tautological and unable to fail."
+    ),
 }
 
 
@@ -153,6 +174,7 @@ class Finding:
     test_name: str
     detail: str = ""
     snippet: str = ""
+    suggested_fix: str = ""
 
     @property
     def title(self) -> str:

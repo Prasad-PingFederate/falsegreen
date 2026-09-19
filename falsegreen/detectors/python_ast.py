@@ -258,6 +258,8 @@ class _Analyzer(ast.NodeVisitor):
         self._loop_depth = 0
         self._loop_assertion_count = 0
         self._outside_loop_assertion_count = 0
+        self._soft_assert_calls: List[int] = []
+        self._has_soft_assert_finalize = False
 
     # -- helpers --------------------------------------------------------
 
@@ -274,7 +276,7 @@ class _Analyzer(ast.NodeVisitor):
                 return node
         return None
 
-    def _add(self, rule: Rule, severity: Severity, lineno: int, detail: str = "") -> None:
+    def _add(self, rule: Rule, severity: Severity, lineno: int, detail: str = "", suggested_fix: str = "") -> None:
         self.result.findings.append(
             Finding(
                 rule=rule,
@@ -284,6 +286,7 @@ class _Analyzer(ast.NodeVisitor):
                 test_name=self._current_test.name if self._current_test else self._current_func_name,
                 detail=detail,
                 snippet=self._snippet(lineno),
+                suggested_fix=suggested_fix,
             )
         )
 
@@ -430,9 +433,13 @@ class _Analyzer(ast.NodeVisitor):
         outer_loop_depth = self._loop_depth
         outer_loop_asserts = self._loop_assertion_count
         outer_outside_asserts = self._outside_loop_assertion_count
+        outer_soft_calls = self._soft_assert_calls
+        outer_soft_finalize = self._has_soft_assert_finalize
         self._loop_depth = 0
         self._loop_assertion_count = 0
         self._outside_loop_assertion_count = 0
+        self._soft_assert_calls = []
+        self._has_soft_assert_finalize = False
 
         if is_test:
             case = TestCase(
@@ -497,6 +504,19 @@ class _Analyzer(ast.NodeVisitor):
                     f"if the collection is empty, the test passes without verifying anything",
                 )
 
+            if (
+                self._soft_assert_calls
+                and not self._has_soft_assert_finalize
+                and not self._current_test.is_disabled
+            ):
+                self._add(
+                    Rule.UNFINALIZED_SOFT_ASSERT,
+                    Severity.CRITICAL,
+                    self._soft_assert_calls[0],
+                    f"{len(self._soft_assert_calls)} soft assertion(s) recorded but assert_all() was never called",
+                    suggested_fix="check.assert_all()",
+                )
+
             # A forced interaction is only interesting when nothing verifies it.
             if self._forced_calls and self._effective_assertions == 0:
                 call = self._forced_calls[0]
@@ -527,6 +547,8 @@ class _Analyzer(ast.NodeVisitor):
         self._loop_depth = outer_loop_depth
         self._loop_assertion_count = outer_loop_asserts
         self._outside_loop_assertion_count = outer_outside_asserts
+        self._soft_assert_calls = outer_soft_calls
+        self._has_soft_assert_finalize = outer_soft_finalize
 
     @staticmethod
     def _is_trivial_wrapper(node) -> bool:
@@ -549,6 +571,7 @@ class _Analyzer(ast.NodeVisitor):
         return any(_handler_swallows(h) for h in real[0].handlers)
 
     def visit_Assert(self, node: ast.Assert) -> None:
+        snippet = self._snippet(node.lineno)
         if self._is_tautology(node.test):
             self._add(
                 Rule.TAUTOLOGICAL_ASSERTION,
@@ -560,6 +583,21 @@ class _Analyzer(ast.NodeVisitor):
             self.generic_visit(node)
             return
 
+        # Check for empty string tautology: assert "" in response
+        if isinstance(node.test, ast.Compare) and len(node.test.ops) == 1:
+            if isinstance(node.test.ops[0], ast.In):
+                if isinstance(node.test.left, ast.Constant) and node.test.left.value == "":
+                    self._add(
+                        Rule.EMPTY_STRING_ASSERTION,
+                        Severity.CRITICAL,
+                        node.lineno,
+                        "assert '' in ... is always true because empty string is present in every string",
+                        suggested_fix="assert expected_non_empty_str in ...",
+                    )
+                    self._assertion_count += 1
+                    self.generic_visit(node)
+                    return
+
         trap = self._constant_or_trap(node.test)
         if trap is not None:
             self._add(
@@ -567,6 +605,7 @@ class _Analyzer(ast.NodeVisitor):
                 Severity.CRITICAL,
                 node.lineno,
                 f"`assert ... or {trap}` is always true because '{trap}' is a truthy constant",
+                suggested_fix="assert status in (200, 201)" if "201" in str(trap) or "200" in snippet else "assert a == x or a == y",
             )
             self._assertion_count += 1
             self.generic_visit(node)
@@ -602,12 +641,20 @@ class _Analyzer(ast.NodeVisitor):
 
         if name in MOCK_TYPO_METHOD_NAMES:
             suggested = MOCK_TYPO_METHOD_NAMES[name]
+            snippet = self._snippet(node.lineno)
+            fixed_snippet = snippet.replace(name, suggested) if snippet else f"mock.{suggested}()"
             self._add(
                 Rule.MOCK_ASSERTION_TYPO,
                 Severity.CRITICAL,
                 node.lineno,
                 f"'{name}()' is not a valid mock assertion (did you mean '{suggested}()'?)",
+                suggested_fix=fixed_snippet,
             )
+
+        if root in {"check", "soft_assert", "soft_asserts"} or name.startswith("check_"):
+            self._soft_assert_calls.append(node.lineno)
+        if name in {"assert_all", "verify_all", "check_all"}:
+            self._has_soft_assert_finalize = True
 
         if name in ASSERT_CALL_NAMES:
             self._record_assertion(node.lineno, f"{name}()")
@@ -633,16 +680,30 @@ class _Analyzer(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Expr(self, node: ast.Expr) -> None:
-        """A bare `expect(x)` statement builds an assertion and throws it away."""
+        """A bare `expect(x)` statement or predicate helper call builds a check and discards it."""
+        snippet = self._snippet(node.lineno)
         if isinstance(node.value, ast.Call):
             call = node.value
+            func_name = _call_name(call)
             if isinstance(call.func, ast.Name) and call.func.id == "expect":
                 self._add(
                     Rule.DANGLING_EXPECT,
                     Severity.CRITICAL,
                     node.lineno,
                     "expect(...) with no matcher - the assertion object is discarded",
+                    suggested_fix=f"await {snippet}.to_be_visible()" if snippet else "await expect(...).to_be_visible()",
                 )
+            elif self._current_test is not None:
+                PREDICATE_PREFIXES = ("is_", "has_", "can_", "should_", "exists", "contains")
+                PREDICATE_EXACT = {"is_visible", "is_hidden", "is_enabled", "is_checked", "is_editable", "exists", "is_displayed"}
+                if func_name.startswith(PREDICATE_PREFIXES) or func_name in PREDICATE_EXACT:
+                    self._add(
+                        Rule.IGNORED_PREDICATE_CALL,
+                        Severity.CRITICAL,
+                        node.lineno,
+                        f"'{func_name}()' returns a boolean that is discarded; add assert to actually verify it",
+                        suggested_fix=f"assert {snippet}" if snippet else f"assert {func_name}()",
+                    )
         elif isinstance(node.value, ast.Attribute):
             attr_name = node.value.attr
             if attr_name in MOCK_BARE_ASSERT_ATTRS:
@@ -651,6 +712,7 @@ class _Analyzer(ast.NodeVisitor):
                     Severity.CRITICAL,
                     node.lineno,
                     f"'{attr_name}' was accessed as an attribute without (); the assertion never executed",
+                    suggested_fix=f"{snippet}()" if snippet else f"{attr_name}()",
                 )
         self.generic_visit(node)
 
