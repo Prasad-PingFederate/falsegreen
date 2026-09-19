@@ -10,13 +10,25 @@ from pathlib import Path
 from typing import List
 
 from . import report as report_mod
+from .detectors.javascript import scan_js_file
 from .detectors.python_ast import scan_python_file
 from .models import ScanResult, Severity
 from .score import compute
 
+PY_EXTENSIONS = {".py"}
+JS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}
+
 DEFAULT_INCLUDES = [
+    # Python
     "test_*.py", "*_test.py", "*Test*.py", "*_Playwright.py",
     "*.spec.py", "tests/**/*.py",
+    # JavaScript / TypeScript: Playwright, Jest, Vitest, Cypress
+    "*.spec.js", "*.spec.jsx", "*.spec.ts", "*.spec.tsx",
+    "*.test.js", "*.test.jsx", "*.test.ts", "*.test.tsx",
+    "*.cy.js", "*.cy.ts",
+    "tests/**/*.js", "tests/**/*.ts",
+    "e2e/**/*.js", "e2e/**/*.ts",
+    "__tests__/**/*.js", "__tests__/**/*.ts",
 ]
 
 DEFAULT_EXCLUDES = [
@@ -82,7 +94,9 @@ def collect_files(root: Path, includes: List[str], excludes: List[str]) -> List[
         return [root]
 
     found: List[Path] = []
-    for path in root.rglob("*.py"):
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in (PY_EXTENSIONS | JS_EXTENSIONS):
+            continue
         full = str(path).replace(os.sep, "/")
         if any(fnmatch.fnmatch(full, pattern) for pattern in excludes):
             continue
@@ -115,7 +129,10 @@ def main(argv: List[str] | None = None) -> int:
 
     result = ScanResult(root=scan_root)
     for path in files:
-        scan_python_file(path, result)
+        if path.suffix in JS_EXTENSIONS:
+            scan_js_file(path, result)
+        else:
+            scan_python_file(path, result)
 
     score = compute(result)
 

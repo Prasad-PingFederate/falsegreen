@@ -5,6 +5,9 @@
 A passing test suite only means something if its tests were capable of going red.
 Some of them weren't. `falsegreen` finds those.
 
+Works on **Python** (pytest, Playwright) and **JavaScript/TypeScript**
+(Playwright, Jest, Vitest, Testing Library).
+
 ```
   Trust Score  65/100   grade D
   180 of 519 tests (35%) cannot fail.
@@ -47,6 +50,8 @@ surface to your CI and can't break because a transitive pin moved.
 | `assertion-free-helper` | A function named `assert_*` / `verify_*` / `check_*` that never asserts. |
 | `forced-interaction` | `force=True` click with nothing verifying it landed. |
 | `sleep-instead-of-wait` | Fixed sleep standing in for a wait condition. |
+| `unawaited-expect` | JS/TS: an async `expect` nobody awaits, so it cannot fail the test. |
+| `disabled-test` | Skipped tests, and `test.only` — which silently skips all the others. |
 
 ### The one people argue about
 
@@ -60,6 +65,40 @@ else:
 This reads like a careful test. It is a tautology. The assertion only runs when
 the element is already known to be present, and the case where it's *missing* —
 the bug the test exists to catch — prints a warning and passes.
+
+### The JavaScript one that matters most
+
+Playwright's web-first assertions are asynchronous:
+
+```js
+await expect(page.locator('#row')).toBeVisible();   // correct
+expect(page.locator('#row')).toBeVisible();         // never fails the test
+```
+
+The second returns a promise nobody waits on. The assertion settles after the
+test has already passed, so a failure shows up as an unhandled rejection at
+best and as nothing at all at worst.
+
+This is not a hypothetical. Scanning [vercel/swr](https://github.com/vercel/swr)
+turns up:
+
+```js
+expect(globalMutate(key, Promise.resolve('data'))).resolves.toBe('data')
+```
+
+`.resolves` returns a promise too. No `await`, no failure, ever.
+
+The rule only fires for matchers that are genuinely async, so ordinary
+synchronous Jest assertions like `expect(total).toBe(4)` are left alone.
+
+### And `test.only`, which is worse than it looks
+
+```js
+test.only('just this one', async ({ page }) => { ... });
+```
+
+Committed by accident, this silently stops every other test in the file from
+running. CI goes green having executed one test. Flagged as critical.
 
 ### Why `assertion-free-helper` matters
 
@@ -139,10 +178,41 @@ conditional with a failing `else` is not flagged.
 
 ---
 
-## Python only, for now
+## What it scans
 
-JavaScript/TypeScript support (Playwright, Jest, Vitest) is the obvious next
-step — `await`-less `expect` is the same bug class and is rampant.
+| Language | Frameworks | Files picked up by default |
+|---|---|---|
+| Python | pytest, Playwright | `test_*.py`, `*_test.py`, `tests/**/*.py` |
+| JS / TS | Playwright, Jest, Vitest, Cypress, Testing Library | `*.spec.*`, `*.test.*`, `*.cy.*`, `tests/`, `e2e/`, `__tests__/` |
+
+Use `--include` to add your own patterns.
+
+The JavaScript support has no parser dependency — falsegreen still installs with
+zero dependencies. It tokenizes far enough to know code from strings, comments,
+template literals and regex literals, so `expect(` inside a comment or a string
+never produces a finding.
+
+It also understands that a throwing query is an assertion. React Testing
+Library's `getByText` / `findByRole` throw when nothing matches, so a test using
+them asserts something even with no `expect` in sight. (`queryBy*` returns null
+rather than throwing, so it does not count — which is correct, and is why those
+two families are treated differently.)
+
+## Accuracy
+
+Scores from real projects, as a sanity check that this discriminates rather than
+calling everything broken:
+
+| Project | Language | Trust Score |
+|---|---|---|
+| encode/httpx | Python | 99 |
+| tiangolo/fastapi | Python | 98 |
+| vercel/swr | TypeScript | 98 |
+| psf/requests | Python | 94 |
+| pallets/flask | Python | 92 |
+
+Well-maintained libraries land in the nineties. A score in the sixties means
+something real.
 
 ## License
 
