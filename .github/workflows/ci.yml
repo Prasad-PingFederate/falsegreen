@@ -1,0 +1,42 @@
+name: Core Engine CI & SARIF Validation
+
+on:
+  push:
+    branches: [ main, pre-dev, feat/*, fix/* ]
+  pull_request:
+    branches: [ main, pre-dev ]
+
+jobs:
+  test:
+    name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-cov
+
+      - name: Run Pytest Suite
+        run: |
+          pytest -v tests/
+
+      - name: Verify CLI Self-Scan & SARIF Export
+        run: |
+          python -m falsegreen --format sarif --output results.sarif
+          python -m falsegreen --format json
