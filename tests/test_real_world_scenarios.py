@@ -136,3 +136,42 @@ def test_mock():
     res = scan(tmp_path, src)
     finding = [f for f in res.findings if f.rule == Rule.MOCK_ASSERTION_TYPO][0]
     assert "mock_api.assert_called_once_with(\"arg\")" in finding.suggested_fix
+
+
+# ==============================================================================
+# Async Playwright Unawaited Coroutine Action Tests
+# ==============================================================================
+
+def test_unawaited_playwright_goto_in_async_test(tmp_path: Path):
+    src = """
+async def test_dashboard_navigation(page):
+    page.goto("https://app.example.com")
+    assert 1 == 1
+"""
+    res = scan(tmp_path, src)
+    assert Rule.UNAWAITED_ASYNC_CALL in rules(res)
+    finding = [f for f in res.findings if f.rule == Rule.UNAWAITED_ASYNC_CALL][0]
+    assert "goto" in finding.detail
+    assert "await" in finding.suggested_fix
+
+
+def test_awaited_playwright_call_not_flagged(tmp_path: Path):
+    src = """
+async def test_dashboard_navigation(page):
+    await page.goto("https://app.example.com")
+    await page.click("button#submit")
+    assert True is True
+"""
+    res = scan(tmp_path, src)
+    assert Rule.UNAWAITED_ASYNC_CALL not in rules(res)
+
+
+def test_sync_playwright_call_not_flagged(tmp_path: Path):
+    src = """
+def test_sync_dashboard(page):
+    page.goto("https://app.example.com")
+    page.click("button#submit")
+    assert True is True
+"""
+    res = scan(tmp_path, src)
+    assert Rule.UNAWAITED_ASYNC_CALL not in rules(res)

@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=25, help="Findings shown in terminal output")
     p.add_argument("--no-color", action="store_true")
     p.add_argument("--quiet", "-q", action="store_true", help="Only print the score line")
+    p.add_argument("--github-annotations", action="store_true", help="Emit GitHub Actions ::warning and ::error workflow annotations")
     return p
 
 
@@ -241,6 +242,11 @@ def main(argv: List[str] | None = None) -> int:
         color = not args.no_color and sys.stdout.isatty() and os.getenv("NO_COLOR") is None
         text = report_mod.terminal(result, score, color=color, limit=args.limit)
 
+
+    if args.github_annotations or os.getenv("GITHUB_ACTIONS") == "true":
+        for f in result.findings:
+            cmd = "error" if f.severity in (Severity.CRITICAL, Severity.HIGH) else "warning"
+            sys.stdout.write(f"::{cmd} file={f.file},line={f.line},title={f.title}::{f.detail}\n")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text, encoding="utf-8")
