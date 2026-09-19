@@ -38,6 +38,10 @@ class Rule(str, Enum):
     FORCED_INTERACTION = "forced-interaction"
     SELF_GUARDED_ASSERTION = "self-guarded-assertion"
     OPTIONAL_ASSERTION = "optional-assertion"
+    MOCK_ASSERTION_TYPO = "mock-assertion-typo"
+    CONSTANT_CONDITION_TRAP = "constant-condition-trap"
+    BROAD_RAISES = "broad-raises"
+    LOOP_ONLY_ASSERTION = "loop-only-assertion"
 
 
 RULE_TITLES = {
@@ -53,6 +57,10 @@ RULE_TITLES = {
     Rule.FORCED_INTERACTION: "Forced interaction with no verification after it",
     Rule.SELF_GUARDED_ASSERTION: "Assertion guarded by the condition it asserts",
     Rule.OPTIONAL_ASSERTION: "Assertion runs only on one branch; the other passes silently",
+    Rule.MOCK_ASSERTION_TYPO: "Mock assertion typo or missing parentheses",
+    Rule.CONSTANT_CONDITION_TRAP: "Assertion condition contains truthy constant that is always true",
+    Rule.BROAD_RAISES: "pytest.raises catches broad Exception or BaseException",
+    Rule.LOOP_ONLY_ASSERTION: "Assertion only inside loop; passes silently if collection is empty",
 }
 
 RULE_EXPLANATIONS = {
@@ -109,6 +117,29 @@ RULE_EXPLANATIONS = {
         "Every assertion in this test sits inside a conditional with no failing "
         "alternative. When the condition is false the test reaches the end and passes "
         "having verified nothing, which is indistinguishable from a real pass in CI."
+    ),
+    Rule.MOCK_ASSERTION_TYPO: (
+        "A mock assertion was accessed as an attribute without parentheses (e.g. "
+        "`mock.assert_called_once`), or a misspelled assertion method was called "
+        "(e.g. `mock.assert_called_with_once`). On standard Mock objects, this "
+        "evaluates as a truthy mock attribute and never raises an error, leaving the "
+        "test permanently green without verifying the mock."
+    ),
+    Rule.CONSTANT_CONDITION_TRAP: (
+        "The assertion condition uses `or` with a truthy constant (e.g. "
+        "`assert status == 200 or 201`). In Python, truthy constants like non-zero "
+        "numbers or non-empty strings make the entire expression always true, so "
+        "the assertion can never fail."
+    ),
+    Rule.BROAD_RAISES: (
+        "pytest.raises(Exception) or pytest.raises(BaseException) catches every possible "
+        "failure, including syntax errors, KeyError, AttributeError, or unrelated crashes "
+        "in the test harness rather than the specific exception expected."
+    ),
+    Rule.LOOP_ONLY_ASSERTION: (
+        "All assertions in this test sit exclusively inside a for-loop body. If the "
+        "collection is empty, the loop body never executes, zero assertions are run, "
+        "and the test passes green."
     ),
 }
 

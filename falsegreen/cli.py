@@ -22,6 +22,7 @@ JS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}
 # Robot Framework keeps suites in .robot, and .resource for shared keywords.
 ROBOT_EXTENSIONS = {".robot", ".resource"}
 JAVA_EXTENSIONS = {".java"}
+ALL_EXTENSIONS = PY_EXTENSIONS | JS_EXTENSIONS | ROBOT_EXTENSIONS | JAVA_EXTENSIONS
 
 DEFAULT_INCLUDES = [
     # Python
@@ -43,10 +44,27 @@ DEFAULT_INCLUDES = [
     "src/test/java/**/*.java",
 ]
 
+#: Corpora of deliberately broken tests. Held separately from the vendor
+#: exclusions above because these can plausibly contain a project's real tests,
+#: so when they match anything the report has to say so rather than quietly
+#: producing a better score.
+FIXTURE_EXCLUDES = ["*/testdata/*", "*/fixtures/*", "*/__fixtures__/*"]
+
 DEFAULT_EXCLUDES = [
     "*/node_modules/*", "*/.venv/*", "*/venv/*", "*/__pycache__/*",
     "*/.git/*", "*/build/*", "*/dist/*", "*/site-packages/*",
+    # Deliberately broken sample suites. Every tool that analyses tests keeps a
+    # corpus of tests that cannot fail, because that is what it is built to
+    # recognise - and scoring that corpus as if it were the project's own suite
+    # reports the tool as the worst offender it knows. Go's toolchain already
+    # treats testdata/ this way. Overridable: pass --include to scan them.
+    *FIXTURE_EXCLUDES,
 ]
+
+#: A project can declare its own exclusions here, one glob per line, # for
+#: comments. Anything a project knows is not its own test suite belongs here
+#: rather than in this list.
+IGNORE_FILENAME = ".falsegreenignore"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,13 +119,72 @@ def _matches(path: Path, patterns: List[str], root: Path) -> bool:
     return False
 
 
+def read_ignore_file(root: Path) -> List[str]:
+    """Read .falsegreenignore from the scan root, if present.
+
+    Returns glob patterns in the same dialect as DEFAULT_EXCLUDES. A bare
+    directory name is expanded to */name/* so that `fixtures` does the obvious
+    thing rather than matching nothing.
+    """
+    ignore = root / IGNORE_FILENAME if root.is_dir() else root.parent / IGNORE_FILENAME
+    if not ignore.is_file():
+        return []
+
+    patterns: List[str] = []
+    try:
+        lines = ignore.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    for line in lines:
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        if "*" not in entry and "?" not in entry:
+            entry = entry.strip("/")
+            patterns.append(f"*/{entry}/*")
+            patterns.append(f"*/{entry}")
+        else:
+            patterns.append(entry)
+    return patterns
+
+
+def ignored_test_files(root: Path, includes: List[str]) -> List[Path]:
+    """Files that look like tests but were dropped as fixtures or by .falsegreenignore.
+
+    Exists so the CLI can report them. An exclusion that silently raises the
+    Trust Score is the same false green this tool exists to expose, so the one
+    rule whose matches are plausibly real tests has to be accountable.
+    """
+    if root.is_file():
+        return []
+
+    dropped = FIXTURE_EXCLUDES + read_ignore_file(root)
+    vendor = [e for e in DEFAULT_EXCLUDES if e not in FIXTURE_EXCLUDES]
+
+    found: List[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in ALL_EXTENSIONS:
+            continue
+        full = str(path).replace(os.sep, "/")
+        if any(fnmatch.fnmatch(full, pattern) for pattern in vendor):
+            continue
+        if not any(fnmatch.fnmatch(full, pattern) for pattern in dropped):
+            continue
+        if _matches(path, includes, root):
+            found.append(path)
+    return sorted(found)
+
+
 def collect_files(root: Path, includes: List[str], excludes: List[str]) -> List[Path]:
     if root.is_file():
         return [root]
 
+    excludes = list(excludes) + read_ignore_file(root)
+
     found: List[Path] = []
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in (PY_EXTENSIONS | JS_EXTENSIONS | ROBOT_EXTENSIONS | JAVA_EXTENSIONS):
+        if not path.is_file() or path.suffix not in ALL_EXTENSIONS:
             continue
         full = str(path).replace(os.sep, "/")
         if any(fnmatch.fnmatch(full, pattern) for pattern in excludes):

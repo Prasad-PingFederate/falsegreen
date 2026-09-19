@@ -23,6 +23,9 @@ ASSERT_CALL_NAMES = {
     "assertRaises", "assertAlmostEqual", "assertGreater", "assertLess",
     "assertListEqual", "assertDictEqual", "assertCountEqual", "assertRegex",
     "fail", "raises", "approx",
+    "assert_called", "assert_called_once", "assert_called_with",
+    "assert_called_once_with", "assert_not_called", "assert_any_call",
+    "assert_has_calls",
 }
 
 # Playwright / Jest style terminal matchers. expect(x) alone asserts nothing;
@@ -47,6 +50,29 @@ PRESENCE_MATCHERS = {
 
 # Helper naming that promises verification to every reader of the call site.
 CHECKING_PREFIXES = ("assert_", "verify_", "check_", "expect_", "ensure_", "validate_")
+
+# Mock assertion typo sets
+MOCK_BARE_ASSERT_ATTRS = {
+    "assert_called",
+    "assert_called_once",
+    "assert_called_with",
+    "assert_called_once_with",
+    "assert_not_called",
+    "assert_any_call",
+    "assert_has_calls",
+}
+
+MOCK_TYPO_METHOD_NAMES = {
+    "assert_called_with_once": "assert_called_once_with",
+    "assert_not_called_with": "assert_not_called",
+    "assert_was_called": "assert_called",
+    "assert_is_called": "assert_called",
+    "assert_called_times": "assert_called",
+    "called_once_with": "assert_called_once_with",
+    "assert_once_called": "assert_called_once",
+    "assert_called_once_without_arguments": "assert_called_once_with",
+    "assert_not_called_once": "assert_not_called",
+}
 
 
 def _is_test_function(node: ast.AST) -> bool:
@@ -229,6 +255,9 @@ class _Analyzer(ast.NodeVisitor):
         # Stack of If nodes we are inside the body of, with the guard's target.
         self._if_guard_stack: List[tuple] = []
         self._unconditional_assertions = 0
+        self._loop_depth = 0
+        self._loop_assertion_count = 0
+        self._outside_loop_assertion_count = 0
 
     # -- helpers --------------------------------------------------------
 
@@ -285,6 +314,11 @@ class _Analyzer(ast.NodeVisitor):
                     )
                     return
 
+        if self._loop_depth > 0:
+            self._loop_assertion_count += 1
+        else:
+            self._outside_loop_assertion_count += 1
+
         conditional = any(not else_fails for _, else_fails in self._if_guard_stack)
         self._effective_assertions += 1
         if not conditional:
@@ -304,6 +338,57 @@ class _Analyzer(ast.NodeVisitor):
 
         for stmt in node.orelse:
             self.visit(stmt)
+
+
+    def visit_For(self, node: ast.For) -> None:
+        self.visit(node.iter)
+        self.visit(node.target)
+        self._loop_depth += 1
+        for stmt in node.body:
+            self.visit(stmt)
+        self._loop_depth -= 1
+        for stmt in node.orelse:
+            self.visit(stmt)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        self.visit(node.target)
+        self._loop_depth += 1
+        for stmt in node.body:
+            self.visit(stmt)
+        self._loop_depth -= 1
+        for stmt in node.orelse:
+            self.visit(stmt)
+
+    def visit_With(self, node: ast.With) -> None:
+        self._check_with_items(node.items, node.lineno)
+        self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._check_with_items(node.items, node.lineno)
+        self.generic_visit(node)
+
+    def _check_with_items(self, items: List[ast.withitem], lineno: int) -> None:
+        for item in items:
+            expr = item.context_expr
+            if isinstance(expr, ast.Call):
+                name = _call_name(expr)
+                if name in {"raises", "assertRaises"} and expr.args:
+                    first_arg = expr.args[0]
+                    exc_name = ""
+                    if isinstance(first_arg, ast.Name):
+                        exc_name = first_arg.id
+                    elif isinstance(first_arg, ast.Attribute):
+                        exc_name = first_arg.attr
+                    if exc_name in {"Exception", "BaseException"}:
+                        has_match = any(kw.arg == "match" for kw in expr.keywords)
+                        if not has_match:
+                            self._add(
+                                Rule.BROAD_RAISES,
+                                Severity.HIGH,
+                                getattr(expr, "lineno", lineno),
+                                f"pytest.raises({exc_name}) with no match= catches all crashes, masking unexpected bugs",
+                            )
 
     def visit_Try(self, node: ast.Try) -> None:
         self._try_body_stack.append(node)
@@ -342,6 +427,12 @@ class _Analyzer(ast.NodeVisitor):
         self._try_body_stack = []
         outer_guards = self._if_guard_stack
         self._if_guard_stack = []
+        outer_loop_depth = self._loop_depth
+        outer_loop_asserts = self._loop_assertion_count
+        outer_outside_asserts = self._outside_loop_assertion_count
+        self._loop_depth = 0
+        self._loop_assertion_count = 0
+        self._outside_loop_assertion_count = 0
 
         if is_test:
             case = TestCase(
@@ -392,6 +483,19 @@ class _Analyzer(ast.NodeVisitor):
                     f"all {self._effective_assertions} assertion(s) sit inside conditionals "
                     f"with no failing alternative",
                 )
+            elif (
+                self._effective_assertions > 0
+                and self._loop_assertion_count > 0
+                and self._outside_loop_assertion_count == 0
+                and not self._current_test.is_disabled
+            ):
+                self._add(
+                    Rule.LOOP_ONLY_ASSERTION,
+                    Severity.HIGH,
+                    node.lineno,
+                    f"all {self._loop_assertion_count} assertion(s) sit inside a for-loop; "
+                    f"if the collection is empty, the test passes without verifying anything",
+                )
 
             # A forced interaction is only interesting when nothing verifies it.
             if self._forced_calls and self._effective_assertions == 0:
@@ -420,6 +524,9 @@ class _Analyzer(ast.NodeVisitor):
         self._forced_calls = outer_forced
         self._try_body_stack = outer_stack
         self._if_guard_stack = outer_guards
+        self._loop_depth = outer_loop_depth
+        self._loop_assertion_count = outer_loop_asserts
+        self._outside_loop_assertion_count = outer_outside_asserts
 
     @staticmethod
     def _is_trivial_wrapper(node) -> bool:
@@ -453,8 +560,29 @@ class _Analyzer(ast.NodeVisitor):
             self.generic_visit(node)
             return
 
+        trap = self._constant_or_trap(node.test)
+        if trap is not None:
+            self._add(
+                Rule.CONSTANT_CONDITION_TRAP,
+                Severity.CRITICAL,
+                node.lineno,
+                f"`assert ... or {trap}` is always true because '{trap}' is a truthy constant",
+            )
+            self._assertion_count += 1
+            self.generic_visit(node)
+            return
+
         self._record_assertion(node.lineno, "assert")
         self.generic_visit(node)
+
+    @staticmethod
+    def _constant_or_trap(test: ast.AST) -> Optional[str]:
+        """Detect `assert x == 200 or 201` or `assert cond or 'truthy_string'`."""
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
+            for val in test.values[1:]:
+                if isinstance(val, ast.Constant) and bool(val.value):
+                    return _describe(val)
+        return None
 
     @staticmethod
     def _is_tautology(test: ast.AST) -> bool:
@@ -471,6 +599,15 @@ class _Analyzer(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         name = _call_name(node)
         root = _root_call_name(node)
+
+        if name in MOCK_TYPO_METHOD_NAMES:
+            suggested = MOCK_TYPO_METHOD_NAMES[name]
+            self._add(
+                Rule.MOCK_ASSERTION_TYPO,
+                Severity.CRITICAL,
+                node.lineno,
+                f"'{name}()' is not a valid mock assertion (did you mean '{suggested}()'?)",
+            )
 
         if name in ASSERT_CALL_NAMES:
             self._record_assertion(node.lineno, f"{name}()")
@@ -505,6 +642,15 @@ class _Analyzer(ast.NodeVisitor):
                     Severity.CRITICAL,
                     node.lineno,
                     "expect(...) with no matcher - the assertion object is discarded",
+                )
+        elif isinstance(node.value, ast.Attribute):
+            attr_name = node.value.attr
+            if attr_name in MOCK_BARE_ASSERT_ATTRS:
+                self._add(
+                    Rule.MOCK_ASSERTION_TYPO,
+                    Severity.CRITICAL,
+                    node.lineno,
+                    f"'{attr_name}' was accessed as an attribute without (); the assertion never executed",
                 )
         self.generic_visit(node)
 

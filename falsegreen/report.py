@@ -185,14 +185,14 @@ def sarif(result: ScanResult, score: Score) -> str:
         )
 
     payload = {
-        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spectification/master/sarif-2.1/schema.json",
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",
         "runs": [
             {
                 "tool": {
                     "driver": {
                         "name": "falsegreen",
-                        "informationUri": "https://github.com/falsegreen/falsegreen",
+                        "informationUri": "https://github.com/Prasad-PingFederate/falsegreen",
                         "rules": list(rules.values()),
                     }
                 },
@@ -209,7 +209,10 @@ def sarif(result: ScanResult, score: Score) -> str:
                                         if _under(f.file, result.root)
                                         else str(f.file).replace("\\", "/")
                                     },
-                                    "region": {"startLine": max(1, f.line)},
+                                    "region": {
+                                        "startLine": max(1, f.line),
+                                        **({"snippet": {"text": f.snippet}} if f.snippet else {}),
+                                    },
                                 }
                             }
                         ],
