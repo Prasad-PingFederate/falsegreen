@@ -99,3 +99,105 @@ def test_go_unconditional_skip():
     assert len(res.tests) == 1
     assert res.tests[0].is_disabled
     assert any(f.rule == Rule.DISABLED_TEST for f in res.findings)
+
+
+def test_go_skip_guarded_by_testing_short_is_not_disabled():
+    """if testing.Short() { t.Skip(...) } is the stdlib's own documented pattern.
+
+    Regression test. The test runs fully, real assertion included, on every
+    ordinary `go test`; only `go test -short` skips it. Reporting it as an
+    unconditional DISABLED_TEST discarded the real t.Fatalf and reported a
+    healthy test as broken.
+    """
+    code = """
+    package pkg
+
+    import "testing"
+
+    func TestSlowPath(t *testing.T) {
+        if testing.Short() {
+            t.Skip("skipping in short mode")
+        }
+        got := Compute()
+        if got != 42 {
+            t.Fatalf("got %d", got)
+        }
+    }
+    """
+    res = scan_snippet(code)
+    assert len(res.tests) == 1
+    assert not res.tests[0].is_disabled
+    assert res.tests[0].effective_assertions > 0
+    assert res.tests[0].is_trustworthy
+    assert not any(f.rule == Rule.DISABLED_TEST for f in res.findings)
+
+
+def test_go_skip_guarded_by_env_var_is_not_disabled():
+    """if os.Getenv(...) == "" { t.Skip(...) } is the standard integration-test gate."""
+    code = """
+    package pkg
+
+    import (
+        "os"
+        "testing"
+    )
+
+    func TestIntegration(t *testing.T) {
+        if os.Getenv("INTEGRATION") == "" {
+            t.Skip("set INTEGRATION=1 to run")
+        }
+        require.NoError(t, run())
+    }
+    """
+    res = scan_snippet(code)
+    assert len(res.tests) == 1
+    assert not res.tests[0].is_disabled
+
+
+def test_go_skip_inside_a_subtest_closure_does_not_disable_the_parent():
+    """A t.Run subtest's own Skip must not mark the parent test disabled."""
+    code = """
+    package pkg
+
+    import "testing"
+
+    func TestParent(t *testing.T) {
+        t.Run("a", func(t *testing.T) {
+            t.Skip()
+        })
+        require.NoError(t, run())
+    }
+    """
+    res = scan_snippet(code)
+    assert len(res.tests) == 1
+    assert not res.tests[0].is_disabled
+
+
+def test_go_guarded_skip_still_surfaces_other_findings():
+    """A guarded skip must fall through to the checks below it, not swallow them.
+
+    The old `continue` after a matched skip suppressed tautology and sleep
+    detection along with the (wrong) disabled verdict - a guarded-skip test
+    with a real problem reported only 'disabled-test' and nothing else.
+    """
+    code = """
+    package pkg
+
+    import (
+        "testing"
+        "time"
+    )
+
+    func TestBoth(t *testing.T) {
+        if testing.Short() {
+            t.Skip()
+        }
+        time.Sleep(2 * time.Second)
+        assert.True(t, true)
+    }
+    """
+    res = scan_snippet(code)
+    rules = {f.rule for f in res.findings}
+    assert Rule.DISABLED_TEST not in rules
+    assert Rule.SLEEP_INSTEAD_OF_WAIT in rules
+    assert Rule.TAUTOLOGICAL_ASSERTION in rules

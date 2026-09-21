@@ -127,8 +127,43 @@ ASSERTION_RE = re.compile(
 #: Fixed sleep: time.Sleep
 SLEEP_RE = re.compile(r"\btime\s*\.\s*Sleep\s*\(")
 
-#: Disabled test: t.Skip / t.Skipf
+#: Disabled test: t.Skip / t.Skipf / t.SkipNow
 SKIP_RE = re.compile(r"\b\w+\s*\.\s*Skip(?:f|Now)?\s*\(")
+
+
+def _unconditional_skip(body_code: str) -> int:
+    """Index of a Skip call made directly in the test body, or -1.
+
+    "Directly in the body" means at brace depth 0 relative to body_code's own
+    opening `{` - not inside an if/for/switch/select or a nested func literal.
+    That distinction is the whole fix: `if testing.Short() { t.Skip(...) }` and
+    `if os.Getenv("INTEGRATION") == "" { t.Skip(...) }` are the two most
+    idiomatic skip patterns in Go, used throughout the standard library, and
+    both are conditional - the test runs fully, assertions and all, on every
+    ordinary `go test`. Treating them as an unconditional disable discards real
+    assertions and reports a healthy test as one that "unconditionally skips
+    execution", which is simply false.
+
+    The whole body is scanned, not a fixed prefix: a real unconditional skip is
+    not always the literal first statement (setup can precede it), and a
+    fixed-length window either matches a guarded skip inside it or misses an
+    unconditional one just past its end - this detector used to do both.
+    """
+    # body_code starts at the function's own opening `{` (that is how the
+    # caller finds it), so that first brace has to be counted before depth 0
+    # means "top level of this body" - starting at -1 makes it so.
+    depth = -1
+    pos = 0
+    for m in SKIP_RE.finditer(body_code):
+        for ch in body_code[pos:m.start()]:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+        pos = m.start()
+        if depth == 0:
+            return m.start()
+    return -1
 
 #: Tautological assertions in Go
 TAUTOLOGY_RE = re.compile(
@@ -168,10 +203,14 @@ def scan_golang_file(path: Path, result: ScanResult) -> None:
         body_code = code[body_open:body_end]
         body_src = src[body_open:body_end]
 
-        # Check for unconditional skip at top of function
-        first_statement = body_code[:120].strip()
-        is_disabled = bool(SKIP_RE.search(first_statement))
-        if is_disabled:
+        # Check for an unconditional skip - one made directly in the body, not
+        # guarded by an if/for/switch/select. A guarded skip falls through to
+        # the normal checks below instead of continuing past them: it is not a
+        # disabled test, and its real assertions, tautologies and sleeps still
+        # need to be judged.
+        skip_at = _unconditional_skip(body_code)
+        if skip_at != -1:
+            skip_line = line_of(src, body_open + skip_at)
             result.tests.append(
                 TestCase(
                     name=fn_name,
@@ -186,10 +225,10 @@ def scan_golang_file(path: Path, result: ScanResult) -> None:
                     rule=Rule.DISABLED_TEST,
                     severity=Severity.LOW,
                     file=path,
-                    line=line_num,
+                    line=skip_line,
                     test_name=fn_name,
                     detail=f"Test '{fn_name}' unconditionally skips execution via t.Skip().",
-                    snippet=body_src[:100].strip(),
+                    snippet=body_src[max(0, skip_at - 20):skip_at + 60].strip(),
                     suggested_fix="Enable test or track skip condition to prevent permanent suite degradation.",
                 )
             )
